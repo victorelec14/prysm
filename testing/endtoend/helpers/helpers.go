@@ -59,6 +59,16 @@ func DeleteAndCreateFile(tmpPath, fileName string) (*os.File, error) {
 	return newFile, nil
 }
 
+// DeleteAndCreatePath replaces DeleteAndCreateFile where a full path is more convenient than dir,file params.
+func DeleteAndCreatePath(fp string) (*os.File, error) {
+	if _, err := os.Stat(fp); os.IsExist(err) {
+		if err = os.Remove(fp); err != nil {
+			return nil, err
+		}
+	}
+	return os.Create(filepath.Clean(fp))
+}
+
 // WaitForTextInFile checks a file every polling interval for the text requested.
 func WaitForTextInFile(file *os.File, text string) error {
 	d := time.Now().Add(maxPollingWaitTime)

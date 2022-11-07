@@ -5,6 +5,7 @@ package params
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -25,6 +26,7 @@ type params struct {
 	LighthouseBeaconNodeCount int
 	ContractAddress           common.Address
 	Ports                     *ports
+	Paths                     *paths
 }
 
 type ports struct {
@@ -49,8 +51,42 @@ type ports struct {
 	JaegerTracingPort               int
 }
 
+type paths struct{}
+
+func (p *paths) Eth1StaticFile(sub ...string) string {
+	parts := append([]string{Eth1StaticFilesPath}, sub...)
+	return path.Join(parts...)
+}
+
+func (p *paths) Eth1Runfile(sub ...string) (string, error) {
+	return bazel.Runfile(p.Eth1StaticFile(sub...))
+}
+
+func (p *paths) MinerKeyPath() (string, error) {
+	return p.Eth1Runfile(minerKeyFilename)
+}
+
 // TestParams is the globally accessible var for getting config elements.
 var TestParams *params
+
+func (p *params) Logfile(name string) string {
+	return path.Join(p.LogPath, name)
+}
+
+func (p *params) Eth1RPCURL(offset int) *url.URL {
+	return &url.URL{
+		Scheme: baseELScheme,
+		Host: fmt.Sprintf("%s:%d", baseELHost, p.Ports.Eth1RPCPort+offset),
+	}
+}
+
+func (p *params) Eth1URL(offset int) *url.URL {
+	return &url.URL{
+		Scheme: baseELScheme,
+		// lowest eth1port is reserved for the miner, pointlessly adding 0 to the base to make that obvious
+		Host: fmt.Sprintf("%s:%d", baseELHost, p.Ports.Eth1Port+offset),
+	}
+}
 
 // BootNodeLogFileName is the file name used for the beacon chain node logs.
 var BootNodeLogFileName = "bootnode.log"
