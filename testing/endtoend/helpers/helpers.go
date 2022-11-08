@@ -17,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
+
 	"github.com/prysmaticlabs/prysm/v3/config/params"
 	eth "github.com/prysmaticlabs/prysm/v3/proto/prysm/v1alpha1"
 	e2e "github.com/prysmaticlabs/prysm/v3/testing/endtoend/params"
@@ -342,4 +345,12 @@ func WaitOnNodes(ctx context.Context, nodes []e2etypes.ComponentRunner, nodesSta
 	}()
 
 	return g.Wait()
+}
+
+func MinerRPCClient() (*ethclient.Client, error) {
+	client, err := rpc.DialHTTP(e2e.TestParams.Eth1RPCURL(e2e.MinerComponentOffset).String())
+	if err != nil {
+		return nil, err
+	}
+	return ethclient.NewClient(client), nil
 }

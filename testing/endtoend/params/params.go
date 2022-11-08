@@ -76,7 +76,7 @@ func (p *params) Logfile(name string) string {
 func (p *params) Eth1RPCURL(offset int) *url.URL {
 	return &url.URL{
 		Scheme: baseELScheme,
-		Host: fmt.Sprintf("%s:%d", baseELHost, p.Ports.Eth1RPCPort+offset),
+		Host:   fmt.Sprintf("%s:%d", baseELHost, p.Ports.Eth1RPCPort+offset),
 	}
 }
 

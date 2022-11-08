@@ -7,6 +7,7 @@ package endtoend
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"os"
 	"path"
 	"strings"
@@ -60,6 +61,7 @@ type testRunner struct {
 	t          *testing.T
 	config     *e2etypes.E2EConfig
 	comHandler *componentHandler
+	depositor  *eth1.Depositor
 }
 
 // newTestRunner creates E2E test runner.
@@ -88,8 +90,20 @@ func (r *testRunner) runBase(runEvents []runEvent) {
 		if err != nil {
 			return errors.Wrap(err, "error getting miner key file from bazel static files")
 		}
-		if err := components.SendAndMineDeposits(keyPath, minGenesisActiveCount, 0, true); err != nil {
+		key, err := helpers.KeyFromPath(keyPath, miner.Password())
+		if err != nil {
+			return errors.Wrap(err, "failed to read key from miner wallet")
+		}
+		client, err := helpers.MinerRPCClient()
+		if err != nil {
+			return errors.Wrap(err, "failed to initialize a client to connect to the miner EL node")
+		}
+		r.depositor = &eth1.Depositor{Key: key, Client: client, NetworkId: big.NewInt(eth1.NetworkId)}
+		if err := r.depositor.SendAndMine(r.comHandler.ctx, minGenesisActiveCount, 0, true); err != nil {
 			return errors.Wrap(err, "failed to send and mine deposits")
+		}
+		if err := r.depositor.Start(r.comHandler.ctx); err != nil {
+			return errors.Wrap(err, "depositor.Start failed")
 		}
 		return nil
 	})
@@ -192,10 +206,13 @@ func (r *testRunner) testDepositsAndTx(ctx context.Context, g *errgroup.Group,
 		if err := helpers.ComponentsStarted(ctx, requiredNodes); err != nil {
 			return fmt.Errorf("deposit check validator node requires beacon nodes to run: %w", err)
 		}
+		if err := helpers.ComponentsStarted(ctx, []e2etypes.ComponentRunner{r.depositor}); err != nil {
+			return errors.Wrap(err, "testDepositsAndTx unable to run, depositor did not Start")
+		}
 		go func() {
 			if r.config.TestDeposits {
 				log.Info("Running deposit tests")
-				err := components.SendAndMineDeposits(keystorePath, int(e2e.DepositCount), minGenesisActiveCount, false /* partial */)
+				err := r.depositor.SendAndMine(ctx, int(e2e.DepositCount), minGenesisActiveCount, false)
 				if err != nil {
 					r.t.Fatal(err)
 				}

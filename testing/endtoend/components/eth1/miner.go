@@ -27,8 +27,6 @@ import (
 
 const (
 	EthAddress = "0x878705ba3f8bc32fcf7f4caa1a35e72af65cf766"
-	// miner is always the lowest port in the range of EL port mappings
-	minerOffset = 0
 )
 
 // Miner represents an ETH1 node which mines blocks.
@@ -60,6 +58,10 @@ func (m *Miner) SetBootstrapENR(bootstrapEnr string) {
 func (m *Miner) DataDir(sub ...string) string {
 	parts := append([]string{e2e.TestParams.TestPath, "eth1data/miner"}, sub...)
 	return path.Join(parts...)
+}
+
+func (m *Miner) Password() string {
+	return KeystorePassword
 }
 
 func (m *Miner) initDataDir() error {
@@ -150,7 +152,6 @@ func (m *Miner) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	log.WithField("keystoreCopy", m.DataDir("keystore", minerFile)).WithField("passwordPath", pwFile).WithField("keystorePath", keystorePath).Warnf("keystore info")
 	if err := io.CopyFile(keystorePath, m.DataDir("keystore", minerFile)); err != nil {
 		return errors.Wrapf(err, "error copying %s to %s", keystorePath, m.DataDir("keystore", minerFile))
 	}
@@ -189,7 +190,7 @@ func (m *Miner) Start(ctx context.Context) error {
 	log.Infof("Communicated enode. Enode is %s", enode)
 
 	// Connect to the started geth dev chain.
-	client, err := rpc.DialHTTP(e2e.TestParams.Eth1RPCURL(minerOffset).String())
+	client, err := rpc.DialHTTP(e2e.TestParams.Eth1RPCURL(e2e.MinerComponentOffset).String())
 	if err != nil {
 		return fmt.Errorf("failed to connect to ipc: %w", err)
 	}
