@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"time"
+
+	"github.com/prysmaticlabs/prysm/v3/encoding/bytesutil"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/pkg/errors"
 	"github.com/prysmaticlabs/prysm/v3/config/params"
 	contracts "github.com/prysmaticlabs/prysm/v3/contracts/deposit"
-	"github.com/prysmaticlabs/prysm/v3/encoding/bytesutil"
+	eth "github.com/prysmaticlabs/prysm/v3/proto/prysm/v1alpha1"
 	e2e "github.com/prysmaticlabs/prysm/v3/testing/endtoend/params"
 	"github.com/prysmaticlabs/prysm/v3/testing/endtoend/types"
 	"github.com/prysmaticlabs/prysm/v3/testing/util"
@@ -19,69 +23,123 @@ import (
 
 const depositGasLimit = 4000000
 
+var gweiPerEth = big.NewInt(int64(params.BeaconConfig().GweiPerEth))
+
+func amtInGwei(deposit *eth.Deposit) *big.Int {
+	amt := big.NewInt(0).SetUint64(deposit.Data.Amount)
+	return amt.Mul(amt, gweiPerEth)
+}
+
+func computeDeposits(offset, nvals int, partial bool) ([]*eth.Deposit, error) {
+	balances := make([]uint64, offset+nvals)
+	partialIndex := len(balances) // set beyond loop invariant so by default nothing gets partial
+	if partial {
+		// Validators in this range will get 2 half (MAX_EFFECTIVE_BALANCE/2) deposits.
+		// Upper half of the range of desired validator indices is used because these can be easily
+		// duplicated with a slice from this offset to the end.
+		partialIndex = offset + nvals/2
+	}
+	// Start setting values at `offset`. Lower elements will be discarded - setting them to zero
+	// ensures they don't slip through and add extra deposits.
+	for i := offset; i < len(balances); i++ {
+		if i >= partialIndex {
+			// these deposits will be duplicated, resulting in 2 deposits summing to MAX_EFFECTIVE_BALANCE
+			balances[i] = params.BeaconConfig().MaxEffectiveBalance / 2
+		} else {
+			balances[i] = params.BeaconConfig().MaxEffectiveBalance
+		}
+	}
+	deposits, _, err := util.DepositsWithBalance(balances)
+	if err != nil {
+		return []*eth.Deposit{}, err
+	}
+
+	// if partial = false, these will be a no-op (partialIndex == len(deposits)),
+	// otherwise it will duplicate the partial deposits.
+	deposits = append(deposits[offset:], deposits[partialIndex:]...)
+
+	return deposits, nil
+}
+
 type Depositor struct {
 	types.EmptyComponent
 	Key       *keystore.Key
 	Client    *ethclient.Client
 	ChainID   *big.Int
 	NetworkId *big.Int
+	cd        *contracts.DepositContract
+	sent      *DepositHistory
 }
 
 var _ types.ComponentRunner = &Depositor{}
 
-func (d *Depositor) SendAndMine(ctx context.Context, validatorNum, offset int, partial bool) error {
-	txOps, err := bind.NewKeyedTransactorWithChainID(d.Key.PrivateKey, d.NetworkId)
-	if err != nil {
-		return err
+func (d *Depositor) History() *DepositHistory {
+	if d.sent == nil {
+		d.sent = &DepositHistory{}
 	}
-	txOps.Context = ctx
-	txOps.GasLimit = depositGasLimit
-	nonce, err := d.Client.PendingNonceAt(ctx, txOps.From)
-	if err != nil {
-		return err
-	}
-	txOps.Nonce = big.NewInt(0).SetUint64(nonce)
+	return d.sent
+}
 
-	contract, err := contracts.NewDepositContract(e2e.TestParams.ContractAddress, d.Client)
-	if err != nil {
-		return err
-	}
+type DepositHistory struct {
+	byBatch map[types.DepositBatch][]*SentDeposit
+	deposits []*SentDeposit
+}
 
-	balances := make([]uint64, validatorNum+offset)
-	for i := 0; i < len(balances); i++ {
-		if i < len(balances)/2 && partial {
-			balances[i] = params.BeaconConfig().MaxEffectiveBalance / 2
+func (h *DepositHistory) Add(sd *SentDeposit) {
+	h.deposits = append(h.deposits, sd)
+	h.updateByBatch(sd)
+}
+
+func (h *DepositHistory) updateByBatch(sd *SentDeposit) {
+	if h.byBatch == nil {
+		h.byBatch = make(map[types.DepositBatch][]*SentDeposit)
+	}
+	h.byBatch[sd.batch] = append(h.byBatch[sd.batch], sd)
+}
+
+func (h *DepositHistory) Balances(batch types.DepositBatch) map[[48]byte]uint64 {
+	balances := make(map[[48]byte]uint64)
+	for _, d := range h.byBatch[batch] {
+		k := bytesutil.ToBytes48(d.deposit.Data.PublicKey)
+		if _, ok := balances[k]; !ok {
+			balances[k] = d.deposit.Data.Amount
 		} else {
-			balances[i] = params.BeaconConfig().MaxEffectiveBalance
+			balances[k] += d.deposit.Data.Amount
 		}
 	}
-	deposits, trie, err := util.DepositsWithBalance(balances)
+	return balances
+}
+
+type SentDeposit struct {
+	root    [32]byte
+	deposit *eth.Deposit
+	tx      *gethtypes.Transaction
+	time    time.Time
+	batch   types.DepositBatch
+}
+
+// SendAndMine uses the deterministic validator generator to generate deposits for `nvals` (number of validators).
+// To control which validators should receive deposits, so that we can generate deposits at different stages of e2e,
+// the `offset` parameter skips the first N validators in the deterministic list.
+// In order to test the requirement that our deposit follower is able to handle multiple partial deposits,
+// the `partial` flag specifies that half of the deposits should be broken up into 2 transactions.
+func (d *Depositor) SendAndMine(ctx context.Context, offset, nvals int, batch types.DepositBatch, partial bool) error {
+	// This is the "Send" part of the function. Compute deposits for `nvals` validators,
+	// with half of those deposits being split over 2 transactions if the `partial` flag is true,
+	// and throwing away any validators before `offset`.
+	deposits, err := computeDeposits(offset, nvals, partial)
 	if err != nil {
 		return err
 	}
-	allDeposits := deposits
-	allRoots := trie.Items()
-	allBalances := balances
-	if partial {
-		deposits2, trie2, err := util.DepositsWithBalance(balances)
-		if err != nil {
+
+	txo, err := d.txops(ctx)
+	if err != nil {
+		return err
+	}
+	for _, dd := range deposits {
+		if err := d.SendDeposit(dd, txo, batch); err != nil {
 			return err
 		}
-		allDeposits = append(deposits, deposits2[:len(balances)/2]...)
-		allRoots = append(trie.Items(), trie2.Items()[:len(balances)/2]...)
-		allBalances = append(balances, balances[:len(balances)/2]...)
-	}
-	for index, dd := range allDeposits {
-		if index < offset {
-			continue
-		}
-		depositInGwei := big.NewInt(int64(allBalances[index]))
-		txOps.Value = depositInGwei.Mul(depositInGwei, big.NewInt(int64(params.BeaconConfig().GweiPerEth)))
-		_, err = contract.Deposit(txOps, dd.Data.PublicKey, dd.Data.WithdrawalCredentials, dd.Data.Signature, bytesutil.ToBytes32(allRoots[index]))
-		if err != nil {
-			return errors.Wrap(err, "unable to send transaction to contract")
-		}
-		txOps.Nonce = txOps.Nonce.Add(txOps.Nonce, big.NewInt(1))
 	}
 
 	// This is the "AndMine" part of the function. WaitForBlocks will spam transactions to/from the given key
@@ -90,4 +148,55 @@ func (d *Depositor) SendAndMine(ctx context.Context, validatorNum, offset int, p
 		return fmt.Errorf("failed to mine blocks %w", err)
 	}
 	return nil
+}
+
+// SendDeposit sends a single deposit. A record of this deposit will be tracked for the life of the Depositor,
+// allowing evaluators to use the deposit history to make assertions about those deposits.
+func (d *Depositor) SendDeposit(dep *eth.Deposit, txo *bind.TransactOpts, batch types.DepositBatch) error {
+	contract, err := d.contractDepositor()
+	if err != nil {
+		return err
+	}
+	txo.Value = amtInGwei(dep)
+	root, err := dep.Data.HashTreeRoot()
+	if err != nil {
+		return err
+	}
+	sent := time.Now()
+	tx, err := contract.Deposit(txo, dep.Data.PublicKey, dep.Data.WithdrawalCredentials, dep.Data.Signature, root)
+	if err != nil {
+		return errors.Wrap(err, "unable to send transaction to contract")
+	}
+	d.History().Add(&SentDeposit{deposit: dep, time: sent, tx: tx, root: root, batch: batch})
+	txo.Nonce = txo.Nonce.Add(txo.Nonce, big.NewInt(1))
+	return nil
+}
+
+// txops is a little helper method that creates a TransactOpts (type encapsulating auth/meta data needed to make a tx).
+func (d *Depositor) txops(ctx context.Context) (*bind.TransactOpts, error) {
+	txo, err := bind.NewKeyedTransactorWithChainID(d.Key.PrivateKey, d.NetworkId)
+	if err != nil {
+		return nil, err
+	}
+	txo.Context = ctx
+	txo.GasLimit = depositGasLimit
+	nonce, err := d.Client.PendingNonceAt(ctx, txo.From)
+	if err != nil {
+		return nil, err
+	}
+	txo.Nonce = big.NewInt(0).SetUint64(nonce)
+	return txo, nil
+}
+
+// contractDepositor is a little helper method that inits and caches a DepositContract value.
+// DepositContract is a special-purpose client for calling the deposit contract.
+func (d *Depositor) contractDepositor() (*contracts.DepositContract, error) {
+	if d.cd == nil {
+		contract, err := contracts.NewDepositContract(e2e.TestParams.ContractAddress, d.Client)
+		if err != nil {
+			return nil, err
+		}
+		d.cd = contract
+	}
+	return d.cd, nil
 }

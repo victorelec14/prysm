@@ -106,7 +106,7 @@ var StandardBeaconCount = 2
 // StandardLighthouseNodeCount is a global constant for the count of lighthouse beacon nodes of standard E2E tests.
 var StandardLighthouseNodeCount = 2
 
-// DepositCount is the amount of deposits E2E makes on a separate validator client.
+// DepositCount is the number of deposits the E2E runner should make to evaluate post-genesis deposit processing.
 var DepositCount = uint64(64)
 
 // NumOfExecEngineTxs is the number of transaction sent to the execution engine.

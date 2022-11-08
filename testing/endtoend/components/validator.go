@@ -29,7 +29,6 @@ import (
 )
 
 const DefaultFeeRecipientAddress = "0x099FB65722e7b2455043bfebF6177f1D2E9738d9"
-const depositGasLimit = 4000000
 
 var _ e2etypes.ComponentRunner = (*ValidatorNode)(nil)
 var _ e2etypes.ComponentRunner = (*ValidatorNodeSet)(nil)

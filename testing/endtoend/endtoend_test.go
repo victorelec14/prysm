@@ -99,7 +99,7 @@ func (r *testRunner) runBase(runEvents []runEvent) {
 			return errors.Wrap(err, "failed to initialize a client to connect to the miner EL node")
 		}
 		r.depositor = &eth1.Depositor{Key: key, Client: client, NetworkId: big.NewInt(eth1.NetworkId)}
-		if err := r.depositor.SendAndMine(r.comHandler.ctx, minGenesisActiveCount, 0, true); err != nil {
+		if err := r.depositor.SendAndMine(r.comHandler.ctx, 0, minGenesisActiveCount, e2etypes.GenesisDepositBatch, true); err != nil {
 			return errors.Wrap(err, "failed to send and mine deposits")
 		}
 		if err := r.depositor.Start(r.comHandler.ctx); err != nil {
@@ -212,7 +212,10 @@ func (r *testRunner) testDepositsAndTx(ctx context.Context, g *errgroup.Group,
 		go func() {
 			if r.config.TestDeposits {
 				log.Info("Running deposit tests")
-				err := r.depositor.SendAndMine(ctx, int(e2e.DepositCount), minGenesisActiveCount, false)
+				// The validators with an index < minGenesisActiveCount all have deposits already from the chain start.
+				// Skip all of those chain start validators by seeking to minGenesisActiveCount in the validator list
+				// for further deposit testing.
+				err := r.depositor.SendAndMine(ctx, minGenesisActiveCount, int(e2e.DepositCount), e2etypes.PostGenesisDepositBatch, false)
 				if err != nil {
 					r.t.Fatal(err)
 				}
@@ -327,7 +330,7 @@ func (r *testRunner) testCheckpointSync(ctx context.Context, g *errgroup.Group, 
 	syncEvaluators := []e2etypes.Evaluator{ev.FinishedSyncing, ev.AllNodesHaveSameHead}
 	for _, evaluator := range syncEvaluators {
 		r.t.Run(evaluator.Name, func(t *testing.T) {
-			assert.NoError(t, evaluator.Evaluation(conns...), "Evaluation failed for sync node")
+			assert.NoError(t, evaluator.Evaluation(nil, conns...), "Evaluation failed for sync node")
 		})
 	}
 	return nil
@@ -384,7 +387,7 @@ func (r *testRunner) testBeaconChainSync(ctx context.Context, g *errgroup.Group,
 	syncEvaluators := []e2etypes.Evaluator{ev.FinishedSyncing, ev.AllNodesHaveSameHead}
 	for _, evaluator := range syncEvaluators {
 		t.Run(evaluator.Name, func(t *testing.T) {
-			assert.NoError(t, evaluator.Evaluation(conns...), "Evaluation failed for sync node")
+			assert.NoError(t, evaluator.Evaluation(nil, conns...), "Evaluation failed for sync node")
 		})
 	}
 	return nil
@@ -525,7 +528,7 @@ func (r *testRunner) defaultEndToEndRun() error {
 		syncEvaluators := []e2etypes.Evaluator{ev.FinishedSyncing, ev.AllNodesHaveSameHead}
 		for _, evaluator := range syncEvaluators {
 			t.Run(evaluator.Name, func(t *testing.T) {
-				assert.NoError(t, evaluator.Evaluation(conns...), "Evaluation failed for sync node")
+				assert.NoError(t, evaluator.Evaluation(nil, conns...), "Evaluation failed for sync node")
 			})
 		}
 	}
@@ -590,8 +593,9 @@ func (r *testRunner) executeProvidedEvaluators(currentEpoch uint64, conns []*grp
 			continue
 		}
 		wg.Add(1)
+		var ec e2etypes.EvaluationContext = r.depositor.History()
 		go r.t.Run(fmt.Sprintf(evaluator.Name, currentEpoch), func(t *testing.T) {
-			err := evaluator.Evaluation(conns...)
+			err := evaluator.Evaluation(ec, conns...)
 			assert.NoError(t, err, "Evaluation failed for epoch %d: %v", currentEpoch, err)
 			wg.Done()
 		})

@@ -56,7 +56,25 @@ type E2EConfig struct {
 type Evaluator struct {
 	Name       string
 	Policy     func(currentEpoch types.Epoch) bool
-	Evaluation func(conn ...*grpc.ClientConn) error // A variable amount of conns is allowed to be passed in for evaluations to check all nodes if needed.
+	Evaluation func(ec EvaluationContext, conn ...*grpc.ClientConn) error // A variable amount of conns is allowed to be passed in for evaluations to check all nodes if needed.
+}
+
+type DepositBatch int
+
+const (
+	UndefinedBatch DepositBatch = iota
+	GenesisDepositBatch
+	PostGenesisDepositBatch
+)
+
+// DepositBalances represents a type that can sum, by validator, all deposits made in E2E prior to the function call.
+type DepositBalancer interface {
+	Balances(DepositBatch) map[[48]byte]uint64
+}
+
+// EvaluationContext allows for additional data to be provided to evaluators that need extra state.
+type EvaluationContext interface {
+	DepositBalancer
 }
 
 // ComponentRunner defines an interface via which E2E component's configuration, execution and termination is managed.

@@ -152,7 +152,7 @@ func (m *Miner) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := io.CopyFile(keystorePath, m.DataDir("keystore", minerFile)); err != nil {
+	if err = io.CopyFile(keystorePath, m.DataDir("keystore", minerFile)); err != nil {
 		return errors.Wrapf(err, "error copying %s to %s", keystorePath, m.DataDir("keystore", minerFile))
 	}
 	err = io.WriteFile(pwFile, []byte(KeystorePassword))
@@ -160,25 +160,36 @@ func (m *Miner) Start(ctx context.Context) error {
 		return err
 	}
 
-	runCmd := exec.CommandContext(ctx, binaryPath, args...) // #nosec G204 -- Safe
-	// redirect miner stderr to a log file
-	minerLog, err := helpers.DeleteAndCreatePath(e2e.TestParams.Logfile("eth1_miner.log"))
-	if err != nil {
-		return err
+	// give the miner start a couple of tries, since the p2p networking check is flaky
+	var minerLog *os.File
+	var retryErr error
+	for retries := 0; retries < 3; retries++ {
+		runCmd := exec.CommandContext(ctx, binaryPath, args...) // #nosec G204 -- Safe
+		// redirect miner stderr to a log file
+		minerLog, err = helpers.DeleteAndCreatePath(e2e.TestParams.Logfile("eth1_miner.log"))
+		if err != nil {
+			return err
+		}
+		runCmd.Stderr = minerLog
+		retryErr = nil
+		log.Infof("Starting eth1 miner, attempt %d, with flags: %s", retries, strings.Join(args[2:], " "))
+		if err = runCmd.Start(); err != nil {
+			return fmt.Errorf("failed to start eth1 chain: %w", err)
+		}
+		// check logs for common issues that prevent the EL miner from starting up.
+		if err = helpers.WaitForTextInFile(minerLog, "Commit new sealing work"); err != nil {
+			return fmt.Errorf("mining log not found, this means the eth1 chain had issues starting: %w", err)
+		}
+		if err = helpers.WaitForTextInFile(minerLog, "Started P2P networking"); err != nil {
+			retryErr = fmt.Errorf("P2P log not found, this means the eth1 chain had issues starting: %w", err)
+			continue
+		}
+		m.cmd = runCmd
+		log.Infof("miner started after %d retries", retries)
+		break
 	}
-	runCmd.Stderr = minerLog
-
-	log.Infof("Starting eth1 miner with flags: %s", strings.Join(args[2:], " "))
-	if err = runCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start eth1 chain: %w", err)
-	}
-
-	// check logs for common issues that prevent the EL miner from starting up.
-	if err = helpers.WaitForTextInFile(minerLog, "Commit new sealing work"); err != nil {
-		return fmt.Errorf("mining log not found, this means the eth1 chain had issues starting: %w", err)
-	}
-	if err = helpers.WaitForTextInFile(minerLog, "Started P2P networking"); err != nil {
-		return fmt.Errorf("P2P log not found, this means the eth1 chain had issues starting: %w", err)
+	if retryErr != nil {
+		return retryErr
 	}
 
 	enode, err := enodeFromLogFile(minerLog.Name())
@@ -239,8 +250,7 @@ func (m *Miner) Start(ctx context.Context) error {
 	// Mark node as ready.
 	close(m.started)
 
-	m.cmd = runCmd
-	return runCmd.Wait()
+	return m.cmd.Wait()
 }
 
 // Started checks whether ETH1 node is started and ready to be queried.
