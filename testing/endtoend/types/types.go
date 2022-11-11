@@ -56,14 +56,20 @@ type E2EConfig struct {
 type Evaluator struct {
 	Name       string
 	Policy     func(currentEpoch types.Epoch) bool
-	Evaluation func(ec EvaluationContext, conn ...*grpc.ClientConn) error // A variable amount of conns is allowed to be passed in for evaluations to check all nodes if needed.
+	// Evaluation accepts one or many/all conns, depending on what is needed by the set of evaluators.
+	Evaluation func(ec EvaluationContext, conn ...*grpc.ClientConn) error
 }
 
+// DepositsBatch represents a group of deposits that are sent together during an e2e run.
 type DepositBatch int
 
 const (
-	UndefinedBatch DepositBatch = iota
+	// reserved zero value
+	undefinedBatch DepositBatch = iota
+	// GenesisDepositBatch deposits are sent to populate the initial set of validators for genesis.
 	GenesisDepositBatch
+	// PostGenesisDepositBatch deposits are sent to test that deposits appear in blocks as expected
+	// and validators become active.
 	PostGenesisDepositBatch
 )
 

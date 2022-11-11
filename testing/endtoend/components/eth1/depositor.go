@@ -62,6 +62,8 @@ func computeDeposits(offset, nvals int, partial bool) ([]*eth.Deposit, error) {
 }
 
 type Depositor struct {
+	// The EmptyComponent type is embedded in the Depositor so that it satisfies the ComponentRunner interface.
+	// This allows other components or e2e set up code to block until its Start method has been called.
 	types.EmptyComponent
 	Key       *keystore.Key
 	Client    *ethclient.Client
@@ -70,9 +72,9 @@ type Depositor struct {
 	cd        *contracts.DepositContract
 	sent      *DepositHistory
 }
-
 var _ types.ComponentRunner = &Depositor{}
 
+// History exposes the DepositHistory value for a Depositor.
 func (d *Depositor) History() *DepositHistory {
 	if d.sent == nil {
 		d.sent = &DepositHistory{}
@@ -80,12 +82,13 @@ func (d *Depositor) History() *DepositHistory {
 	return d.sent
 }
 
+// DepositHistory is a type used by Depositor to keep track of batches of deposit for test assertion purposes.
 type DepositHistory struct {
 	byBatch map[types.DepositBatch][]*SentDeposit
 	deposits []*SentDeposit
 }
 
-func (h *DepositHistory) Add(sd *SentDeposit) {
+func (h *DepositHistory) record(sd *SentDeposit) {
 	h.deposits = append(h.deposits, sd)
 	h.updateByBatch(sd)
 }
@@ -97,6 +100,8 @@ func (h *DepositHistory) updateByBatch(sd *SentDeposit) {
 	h.byBatch[sd.batch] = append(h.byBatch[sd.batch], sd)
 }
 
+// Balances sums, by validator, all deposit amounts that were sent as part of the given batch.
+// This can be used in e2e evaluators to check that the results of deposit transactions are visible on chain.
 func (h *DepositHistory) Balances(batch types.DepositBatch) map[[48]byte]uint64 {
 	balances := make(map[[48]byte]uint64)
 	for _, d := range h.byBatch[batch] {
@@ -110,6 +115,7 @@ func (h *DepositHistory) Balances(batch types.DepositBatch) map[[48]byte]uint64 
 	return balances
 }
 
+// SentDeposit is the record of an individual deposit which has been successfully submitted as a transaction.
 type SentDeposit struct {
 	root    [32]byte
 	deposit *eth.Deposit
@@ -167,7 +173,7 @@ func (d *Depositor) SendDeposit(dep *eth.Deposit, txo *bind.TransactOpts, batch 
 	if err != nil {
 		return errors.Wrap(err, "unable to send transaction to contract")
 	}
-	d.History().Add(&SentDeposit{deposit: dep, time: sent, tx: tx, root: root, batch: batch})
+	d.History().record(&SentDeposit{deposit: dep, time: sent, tx: tx, root: root, batch: batch})
 	txo.Nonce = txo.Nonce.Add(txo.Nonce, big.NewInt(1))
 	return nil
 }

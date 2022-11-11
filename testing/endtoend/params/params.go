@@ -53,15 +53,21 @@ type ports struct {
 
 type paths struct{}
 
-func (p *paths) Eth1StaticFile(sub ...string) string {
-	parts := append([]string{Eth1StaticFilesPath}, sub...)
+// Eth1StaticFile abstracts the location of the eth1 static file folder in the e2e directory, so that
+// a relative path can be used.
+// The relative path is specified as a variadic slice of path parts, in the same way as path.Join.
+func (p *paths) Eth1StaticFile(rel ...string) string {
+	parts := append([]string{Eth1StaticFilesPath}, rel...)
 	return path.Join(parts...)
 }
 
-func (p *paths) Eth1Runfile(sub ...string) (string, error) {
-	return bazel.Runfile(p.Eth1StaticFile(sub...))
+// Eth1Runfile returns the full path to a file in the eth1 static directory, within bazel's run context.
+// The relative path is specified as a variadic slice of path parts, in the same style as path.Join.
+func (p *paths) Eth1Runfile(rel ...string) (string, error) {
+	return bazel.Runfile(p.Eth1StaticFile(rel...))
 }
 
+// MinerKeyPath returns the full path to the file containing the miner's cryptographic keys.
 func (p *paths) MinerKeyPath() (string, error) {
 	return p.Eth1Runfile(minerKeyFilename)
 }
@@ -69,22 +75,20 @@ func (p *paths) MinerKeyPath() (string, error) {
 // TestParams is the globally accessible var for getting config elements.
 var TestParams *params
 
-func (p *params) Logfile(name string) string {
-	return path.Join(p.LogPath, name)
+// Logfile gives the full path to a file in the bazel test environment log directory.
+// The relative path is specified as a variadic slice of path parts, in the same style as path.Join.
+func (p *params) Logfile(rel...string) string {
+	return path.Join(append([]string{p.LogPath}, rel...)...)
 }
 
-func (p *params) Eth1RPCURL(offset int) *url.URL {
+// Eth1RPCURL gives the full url to use to connect to the given eth1 client's RPC endpoint.
+// The `index` param corresponds to the `index` field of the `eth1.Node` e2e component.
+// These are are off by one compared to corresponding beacon nodes, because the miner is assigned index 0.
+// eg instance the index of the EL instance associated with beacon node index `0` would typically be `1`.
+func (p *params) Eth1RPCURL(index int) *url.URL {
 	return &url.URL{
 		Scheme: baseELScheme,
-		Host:   fmt.Sprintf("%s:%d", baseELHost, p.Ports.Eth1RPCPort+offset),
-	}
-}
-
-func (p *params) Eth1URL(offset int) *url.URL {
-	return &url.URL{
-		Scheme: baseELScheme,
-		// lowest eth1port is reserved for the miner, pointlessly adding 0 to the base to make that obvious
-		Host: fmt.Sprintf("%s:%d", baseELHost, p.Ports.Eth1Port+offset),
+		Host:   fmt.Sprintf("%s:%d", baseELHost, p.Ports.Eth1RPCPort+index),
 	}
 }
 
